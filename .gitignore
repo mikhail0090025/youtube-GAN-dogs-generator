@@ -1,0 +1,4 @@
+/datasets/dogs
+/datasets/Images
+/__pycache__
+*.npz
