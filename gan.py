@@ -74,14 +74,18 @@ class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
         self.block = nn.Sequential(
-            ReduceBlock(3, 8, 2, 3), # 3x64x64 => 8x32x32
-            ReduceBlock(8, 16, 2, 3), # 3x64x64 => 8x32x32
-            ReduceBlock(16, 32, 2, 3), # 16x16x16 => 32x8x8
-            ReduceBlock(32, 64, 2, 3), # 32x8x8 => 64x4x4
+            ReduceBlock(3, 4, 2, 3), # 3x64x64 => 8x32x32
+            nn.Dropout(0.1),
+            ReduceBlock(4, 8, 2, 3), # 3x64x64 => 8x32x32
+            nn.Dropout(0.1),
+            ReduceBlock(8, 16, 2, 3), # 16x16x16 => 32x8x8
+            nn.Dropout(0.1),
+            ReduceBlock(16, 32, 2, 3), # 32x8x8 => 64x4x4
 
             nn.Flatten(),
+            nn.Dropout(0.4),
 
-            nn.Linear(64*4*4, 1),
+            nn.Linear(32*4*4, 1),
             nn.Sigmoid()
         )
     
@@ -124,6 +128,7 @@ def compute_kl_divergence(batch, generated):
     hist_generated = np.where(hist_generated == 0, 1e-10, hist_generated)
     return entropy(hist_batch, hist_generated)
 
+'''
 def one_epoch(model_D, model_G, dogs_dataloader, optimizer_D, optimizer_G, noise_size, g_loss, d_loss):
     # Teach D
     model_D.train()
@@ -167,6 +172,50 @@ def one_epoch(model_D, model_G, dogs_dataloader, optimizer_D, optimizer_G, noise
     all_G_losses.append(G_loss / len(dogs_dataloader))
     all_KLs.append(KL_divergence_total / len(dogs_dataloader))
     return D_loss / len(dogs_dataloader), G_loss / len(dogs_dataloader), KL_divergence_total / len(dogs_dataloader)
+'''
+
+def one_epoch(model_D, model_G, dogs_dataloader, optimizer_D, optimizer_G, noise_size, g_loss, d_loss):
+    # Teach D
+    D_loss = 0
+    G_loss = 0
+    KL_divergence_total = 0
+    for i, batch in enumerate(dogs_dataloader):
+        # D learning
+        model_D.train()
+        model_G.eval()
+        optimizer_D.zero_grad()
+        bs = len(batch)
+        noise = torch.randn((bs, noise_size))
+        generated = model_G(noise)
+        predicted1 = model_D(generated)
+        predicted2 = model_D(batch)
+        dloss = d_loss(predicted1, torch.ones_like(predicted1) * 0.0)
+        dloss += d_loss(predicted2, torch.ones_like(predicted2) * 1)
+        dloss = dloss / 2
+        dloss.backward()
+        optimizer_D.step()
+        D_loss += dloss.item()
+        
+        # G learning
+        model_D.eval()
+        model_G.train()
+        optimizer_G.zero_grad()
+        noise = torch.randn((bs, noise_size))
+        generated = model_G(noise)
+        predicted = model_D(generated)
+        gloss = g_loss(predicted, torch.ones_like(predicted) * 1)
+        gloss.backward()
+        optimizer_G.step()
+        if i % 20 == 0:
+            print("Batch ", i+1, "/", len(dogs_dataloader))
+            print("Predicted 1: ", predicted1)
+            print("Predicted 2: ", predicted2)
+        G_loss += gloss.item()
+
+    all_D_losses.append(D_loss / len(dogs_dataloader))
+    all_G_losses.append(G_loss / len(dogs_dataloader))
+    all_KLs.append(KL_divergence_total / len(dogs_dataloader))
+    return D_loss / len(dogs_dataloader), G_loss / len(dogs_dataloader), KL_divergence_total / len(dogs_dataloader)
 
 def go_epochs(epochs, model_D, model_G, dogs_dataloader, optimizer_D, optimizer_G, noise_size, g_loss, d_loss):
     for epoch in range(epochs - 1):
@@ -176,8 +225,8 @@ def go_epochs(epochs, model_D, model_G, dogs_dataloader, optimizer_D, optimizer_
 
 g_loss = nn.MSELoss()
 d_loss = nn.BCELoss()
-dogs_dataset = MyDataset(dataset.full_dataset[:15000])
-dogs_dataloader = DataLoader(dogs_dataset, batch_size=64, shuffle=True)
+dogs_dataset = MyDataset(dataset.full_dataset)
+dogs_dataloader = DataLoader(dogs_dataset, batch_size=32, shuffle=True)
 
 generator = Generator(noise_size)
 discriminator = Discriminator()
